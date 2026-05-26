@@ -1,5 +1,6 @@
 'use strict';
 
+const http = require('http');
 const https = require('https');
 let http2;
 try {
@@ -14,6 +15,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const nock = require('nock');
+const { Request } = require('superagent');
 const request = require('../index.js');
 const throwError = require('./throwError');
 
@@ -251,6 +253,60 @@ describe('request(app)', function () {
   });
 
   describe('.end(fn)', function () {
+    let originalEnd;
+
+    beforeEach(function () {
+      originalEnd = Request.prototype.end;
+    });
+
+    afterEach(function () {
+      Request.prototype.end = originalEnd;
+    });
+
+    it('should wait for server to listen before sending request', function (done) {
+      const server = http.createServer();
+      let addressAvailable = false;
+      let listening = false;
+
+      Object.defineProperty(server, 'listening', {
+        configurable: true,
+        get() {
+          return listening;
+        }
+      });
+      server.address = function () {
+        return addressAvailable ? { port: 1 } : null;
+      };
+      server.listen = function () {
+        addressAvailable = true;
+        return server;
+      };
+      Request.prototype.end = function (fn) {
+        if (!listening) {
+          done(new Error('request dispatched before server was listening'));
+          return this;
+        }
+
+        fn(null, { status: 200, header: {}, text: 'supertest FTW!' });
+        return this;
+      };
+
+      try {
+        request(server)
+          .get('/')
+          .end(function (err, res) {
+            if (err) return done(err);
+            res.text.should.equal('supertest FTW!');
+            done();
+          });
+
+        listening = true;
+        server.emit('listening');
+      } catch (err) {
+        done(err);
+      }
+    });
+
     it('should close server', function (done) {
       const app = express();
       let test;
